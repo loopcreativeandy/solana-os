@@ -44,6 +44,10 @@ static void enter(lv_obj_t *root)
                                LV_SYMBOL_BULLET " ESP-NOW");
     lv_obj_align(blurb, LV_ALIGN_TOP_MID, 0, 138);
 
+    // Not stock firmware: say whose build this is.
+    lv_obj_t *custom = ui_label(root, &sol_mono_12, COL_PURPLE, "Custom build by Andy");
+    lv_obj_align(custom, LV_ALIGN_TOP_MID, 0, 154);
+
     lv_obj_t *foundation = lv_image_create(root);
     lv_image_set_src(foundation, ui_light() ? &img_foundation_black : &img_foundation);
     lv_obj_align(foundation, LV_ALIGN_BOTTOM_MID, 0, -UI_HINT_H - 12);
