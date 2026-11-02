@@ -322,6 +322,13 @@ static int cmd_reboot(int argc, char **argv)
     return 0;
 }
 
+int console_set_baud(int baud)
+{
+    fflush(stdout);
+    uart_wait_tx_done(CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(500));
+    return uart_set_baudrate(CONFIG_ESP_CONSOLE_UART_NUM, baud ? baud : CONFIG_ESP_CONSOLE_UART_BAUDRATE) == ESP_OK ? 0 : -1;
+}
+
 // The REPL waits in our command meanwhile, so the UART is ours: read its
 // driver directly (the REPL installed it). stdin's VFS would add nothing, and
 // in the console's CR mode it holds no byte back.

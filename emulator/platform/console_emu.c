@@ -52,6 +52,11 @@ static void cmd_wifi(int argc, char **argv)
 }
 
 // Commands arrive as whole lines from the page: nothing streams after them.
+int console_set_baud(int baud)
+{
+    return baud ? -1 : 0;   // no serial line here: the page reads the stream as text
+}
+
 int console_stream_read(void *buf, size_t n, int timeout_ms)
 {
     return -1;

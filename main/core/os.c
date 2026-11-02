@@ -664,6 +664,7 @@ void os_start(void)
 
     lvgl_port_lock(0);
     lv_display_add_event_cb(lv_display_get_default(), capture_done, LV_EVENT_REFR_READY, NULL);
+    os_mirror_init();
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
     lv_obj_set_style_bg_color(scr, ui_col(COL_BG), 0);

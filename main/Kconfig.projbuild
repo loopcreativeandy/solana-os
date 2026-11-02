@@ -17,4 +17,12 @@ menu "Solana OS"
             Channel badges park on for ESP-NOW (docs/MESH.md) until the
             server's hello says otherwise (MESH_CHANNEL on the server).
 
+    config SOLANA_OS_SCREEN_MIRROR
+        bool "Screen mirror over the console"
+        default y
+        help
+            Adds the console command "mirror on [baud]|off": streams every
+            redrawn screen area to the computer (tools/mirror.py shows it in
+            a window). Off at boot; turn this option off to leave it out.
+
 endmenu

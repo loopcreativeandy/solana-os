@@ -87,3 +87,5 @@ void os_theme_apply(void);
 
 // Screenshot of the live screen over the console, see tools/badge.py.
 void os_screenshot(void);
+// Optional screen mirror over the console (core/os_mirror.c); registers "mirror". Called by os_start.
+void os_mirror_init(void);
