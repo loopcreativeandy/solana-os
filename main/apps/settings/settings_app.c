@@ -1,5 +1,7 @@
 // Settings: user preferences (core/os_settings) plus shortcuts to system
 // tools. One row per item; SELECT (or LEFT/RIGHT on a choice) changes it.
+// Brightness: LEFT/RIGHT dim or brighten in 10% steps (held keys repeat),
+// SELECT steps down and wraps from the dimmest back to 100%.
 // Software update opens the update screen (apps/update). Factory reset asks
 // again in an OS confirm dialog (SELECT twice).
 
@@ -11,8 +13,9 @@
 #include "esp_app_desc.h"
 #include "core/os_settings.h"
 #include "core/ui.h"
+#include "bsp.h"
 
-enum { ROW_THEME, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
+enum { ROW_THEME, ROW_BRIGHTNESS, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
 
 static ui_list_t *s_list;
 
@@ -28,6 +31,12 @@ static void row(int i, ui_row_t *r, void *ctx)
         r->right_color = COL_TEXT;
         break;
     }
+    case ROW_BRIGHTNESS:
+        strlcpy(r->title, "Brightness", sizeof(r->title));
+        strlcpy(r->sub, LV_SYMBOL_LEFT " dimmer   " LV_SYMBOL_RIGHT " brighter", sizeof(r->sub));
+        snprintf(r->right, sizeof(r->right), "%d%%", bsp_backlight_get_level());
+        r->right_color = COL_TEXT;
+        break;
     case ROW_UPDATE: {
         os_cloud_info_t *in = lv_malloc(sizeof(*in));
         if (in) {
@@ -90,12 +99,32 @@ static void enter(lv_obj_t *root)
     ui_hint(root, LV_SYMBOL_UP LV_SYMBOL_DOWN " pick  SELECT change  CANCEL exit");
 }
 
+static void set_brightness(int level)
+{
+    bsp_backlight_level(level);
+    level = bsp_backlight_get_level();     // clamped
+    if (level != os_setting(OS_SET_BRIGHTNESS)) {
+        os_setting_set(OS_SET_BRIGHTNESS, level);
+    }
+    ui_list_refresh(s_list);
+}
+
 static bool on_key(os_key_t k, bool repeat)
 {
     if (ui_list_key(s_list, k, repeat)) {
         return true;
     }
     int i = ui_list_selected(s_list);
+    if (i == ROW_BRIGHTNESS && (k == OS_KEY_LEFT || k == OS_KEY_RIGHT || (k == OS_KEY_SELECT && !repeat))) {
+        int level = bsp_backlight_get_level();
+        if (k == OS_KEY_SELECT) {
+            level = level <= BSP_BL_MIN ? 100 : level - 10;
+        } else {
+            level += k == OS_KEY_RIGHT ? 10 : -10;
+        }
+        set_brightness(level);
+        return true;
+    }
     bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && i == ROW_THEME);
     if (!change || repeat) {
         return k != OS_KEY_BACK;

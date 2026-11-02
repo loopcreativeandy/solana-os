@@ -6,6 +6,7 @@
 
 typedef enum {
     OS_SET_THEME,           // OS_THEME_DARK (default) or OS_THEME_LIGHT; see ui_col()
+    OS_SET_BRIGHTNESS,      // backlight percent, BSP_BL_MIN..100 in steps of 10 (default 100)
     OS_SET_COUNT,
 } os_setting_t;
 

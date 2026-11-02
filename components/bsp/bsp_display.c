@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_ili9341.h"
@@ -44,15 +45,81 @@ static bool flush_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data
     return woken == pdTRUE;
 }
 
+// Backlight: LEDC PWM on the BL pin. 25 kHz is far above anything a camera's
+// shutter or rolling readout can beat against, so dimmed video doesn't band.
+#define BL_FREQ_HZ  25000
+#define BL_RES      LEDC_TIMER_10_BIT
+#define BL_MAX      ((1 << 10) - 1)
+
+static bool s_bl_ready;
+static bool s_bl_on;
+static uint8_t s_bl_level = 100;
+
+static void bl_apply(void)
+{
+    if (!s_bl_ready) {
+        return;
+    }
+    // Perceived brightness is roughly the square of the duty: 50% looks half as bright.
+    uint32_t p = s_bl_on ? s_bl_level : 0;
+    uint32_t duty = (p * p * BL_MAX + 5000) / 10000;
+    if (p && !duty) {
+        duty = 1;
+    }
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+static void bl_init(void)
+{
+    const ledc_timer_config_t t = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = BL_RES,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = BL_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    const ledc_channel_config_t c = {
+        .gpio_num = BOARD_LCD_BL,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = 0,
+    };
+    if (ledc_timer_config(&t) != ESP_OK || ledc_channel_config(&c) != ESP_OK) {
+        // Fall back to plain on/off so the screen still works.
+        ESP_LOGW(TAG, "backlight PWM unavailable, on/off only");
+        gpio_config_t bl = { .pin_bit_mask = BIT64(BOARD_LCD_BL), .mode = GPIO_MODE_OUTPUT };
+        gpio_config(&bl);
+        return;
+    }
+    s_bl_ready = true;
+}
+
 void bsp_backlight(bool on)
 {
-    gpio_set_level(BOARD_LCD_BL, on);
+    s_bl_on = on;
+    if (s_bl_ready) {
+        bl_apply();
+    } else {
+        gpio_set_level(BOARD_LCD_BL, on);
+    }
+}
+
+void bsp_backlight_level(int percent)
+{
+    s_bl_level = percent < BSP_BL_MIN ? BSP_BL_MIN : percent > 100 ? 100 : percent;
+    bl_apply();
+}
+
+int bsp_backlight_get_level(void)
+{
+    return s_bl_level;
 }
 
 lv_display_t *bsp_display_start(void)
 {
-    gpio_config_t bl = { .pin_bit_mask = BIT64(BOARD_LCD_BL), .mode = GPIO_MODE_OUTPUT };
-    ESP_ERROR_CHECK(gpio_config(&bl));
+    bl_init();
     bsp_backlight(false);
     ESP_ERROR_CHECK(bsp_spi_bus_init());
 

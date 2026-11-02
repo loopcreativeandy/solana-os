@@ -94,6 +94,18 @@ void bsp_backlight(bool on)
     s_backlight = on;
 }
 
+static int s_level = 100;
+
+void bsp_backlight_level(int percent)
+{
+    s_level = percent < BSP_BL_MIN ? BSP_BL_MIN : percent > 100 ? 100 : percent;
+}
+
+int bsp_backlight_get_level(void)
+{
+    return s_level;
+}
+
 lv_display_t *bsp_display_start(void)
 {
     bsp_backlight(false);
@@ -137,4 +149,10 @@ EMSCRIPTEN_KEEPALIVE uint32_t emu_frame(void)
 EMSCRIPTEN_KEEPALIVE int emu_backlight(void)
 {
     return s_backlight;
+}
+
+// Brightness percent while on (0 when off); the page may dim the canvas with it.
+EMSCRIPTEN_KEEPALIVE int emu_brightness(void)
+{
+    return s_backlight ? s_level : 0;
 }

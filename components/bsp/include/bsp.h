@@ -42,6 +42,11 @@ void bsp_sd_print_card(void);
 // ---- Display (ILI9341 + LVGL) ----
 lv_display_t *bsp_display_start(void);
 void bsp_backlight(bool on);
+// Backlight brightness in percent (BSP_BL_MIN..100, clamped); kept while off.
+// Callable before bsp_display_start(): the level is used when it turns on.
+#define BSP_BL_MIN      10
+void bsp_backlight_level(int percent);
+int bsp_backlight_get_level(void);
 
 // ---- Buttons ----
 #define BSP_BTN_PB(n)   (1u << ((n) - 1))   // n = 1..6

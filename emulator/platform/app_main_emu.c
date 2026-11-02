@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "bsp.h"
+#include "core/os_settings.h"
 #include "core/os.h"
 #include "core/os_wifi.h"
 #include "core/os_cloud.h"
@@ -56,6 +57,7 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_spi_bus_init());
     bsp_sd_mount();
 
+    bsp_backlight_level(os_setting(OS_SET_BRIGHTNESS));    // before the screen turns on
     bsp_display_start();
     os_splash();
 
