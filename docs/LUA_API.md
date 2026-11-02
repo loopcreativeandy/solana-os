@@ -115,7 +115,7 @@ HOME always returns to the launcher. The screen below the status bar is
 |---|---|
 | Memory | 48 KB of Lua heap (the app is stopped with "Out of memory" beyond that). A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
-| UI objects | 64 at a time, one of them a QR code |
+| UI objects | 64 at a time, one of them a QR code; images up to 64 x 64, 16 KB of pixels together |
 | Text | 200 bytes per label (longer text ends in "..."), 6 KB of label text on screen |
 | Timers | 8 at a time, ≥ 20 ms |
 | Storage | 16 KB per app (`storage.*`) |
@@ -183,6 +183,8 @@ local list = ui.list(x, y, w, h, items, {on_select=function(i, item) end})
 list:items(newItems)  list:selected() --> index  list:select(i)  list:remove()
 local q = ui.qr(x, y, size, text)       -- a QR code, size x size px (25..218), text ≤ 256 bytes
 q:text("solana:https://...")  q:pos(x, y)  q:show(b)  q:remove()
+local img = ui.image(x, y, w, h, pixels, palette, {scale=1})   -- pixel art, w and h 1..64
+img:pixels(pixels, palette)  img:pos(x, y)  img:show(b)  img:remove()
 ui.hint("SELECT jump   CANCEL exit")    -- key hint pinned to the bottom (16 px)
 ui.toast("Saved")
 ui.confirm("Reset the score?", function(yes) end)      -- modal, SELECT = yes, CANCEL = no
@@ -202,6 +204,25 @@ not every scanner reads light-on-dark codes. One at a time: change what it shows
 `q:text()`. Text that doesn't fit at `size` is an error. Shorter text means bigger
 squares that scan from farther away: up to about 130 bytes at 180 px gives 3 px per
 square.
+
+`ui.image` (`nil` on older badges, so check `if ui.image then`) draws pixel art: `w` x
+`h` pixels, each side 1 to 64. `pixels` is a string of `w * h` bytes, row by row from
+the top left, and each byte is a colour's position in `palette` (1 to 255 colours,
+theme names or `0xRRGGBB`); byte 0 is transparent. `scale` makes every pixel a
+`scale` x `scale` square, without smoothing, and the scaled image must fit the screen.
+`img:pixels()` redraws it at the same size, for animation. The pixels and the palette
+sit on the system heap (1 byte a pixel, 3 a colour, whatever the scale), at most 16 KB
+per app for all its images together: three 64 x 64 images.
+
+```lua
+-- an 8 x 8 heart, drawn 10 x larger
+local P = {0xE0245E, 0xFFFFFF}
+local heart = "\0\1\1\0\0\1\1\0" .. "\1\1\1\1\1\1\1\1" .. "\1\2\1\1\1\1\1\1" .. "\1\1\1\1\1\1\1\1"
+           .. "\0\1\1\1\1\1\1\0" .. "\0\0\1\1\1\1\0\0" .. "\0\0\0\1\1\0\0\0" .. "\0\0\0\0\0\0\0\0"
+if ui.image then ui.image(120, 70, 8, 8, heart, P, {scale = 10}) end
+```
+
+A bundled file works the same way: `ui.image(0, 0, 24, 24, fs.read("monkey.bin"), P)`.
 
 ### `led` (permission `led`)
 

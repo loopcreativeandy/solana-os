@@ -6,6 +6,14 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## Unreleased
+
+- **Lua images**: `ui.image(x, y, w, h, pixels, palette, {scale=})` and `img:pixels()` draw
+  pixel art up to 64 x 64, one palette byte per pixel (0 = transparent), scaled up
+  without smoothing: each run of same-coloured pixels is drawn as one filled block, so
+  scaling costs no memory. Pixels (1 byte each) and palettes sit on the system heap, at
+  most 16 KB per app, freed with the object.
+
 ## 0.5.4 (2026-11-02)
 
 - **Built with ESP-IDF 6.0.1** (was 5.5.4). It fixes a crash (heap corruption,

@@ -29,6 +29,8 @@
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap
 #define LH_QR_TEXT_MAX      256         // bytes per code; more doesn't scan off this screen
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
+#define LH_IMAGE_SIDE       64          // ui.image: at most this many pixels wide and high (before scaling)
+#define LH_IMAGE_BYTES      (16 * 1024) // ui.image pixels (1 byte each) and palettes per app, on the system heap
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
 #define LH_TICK_MS          50          // on_tick period
@@ -47,7 +49,7 @@
 #define LH_READ_CHUNK       256         // compiling from the card, a piece at a time
 #define LH_WS_LATE          4           // sockets closing without a connection, per round
 
-typedef enum { LH_LABEL, LH_RECT, LH_BAR, LH_GRADIENT, LH_LIST, LH_QR, LH_KIND_COUNT } lh_kind_t;
+typedef enum { LH_LABEL, LH_RECT, LH_BAR, LH_GRADIENT, LH_LIST, LH_QR, LH_IMAGE, LH_KIND_COUNT } lh_kind_t;
 
 typedef struct {
     lv_obj_t *obj;              // NULL: free slot

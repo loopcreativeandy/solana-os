@@ -8,6 +8,7 @@
 // error must not unwind.
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "lua_priv.h"
 
@@ -15,7 +16,7 @@ typedef struct {
     uint16_t slot, gen;
 } lh_handle_t;
 
-static const char *const s_meta[LH_KIND_COUNT] = {"ui.label", "ui.rect", "ui.bar", "ui.gradient", "ui.list", "ui.qr"};
+static const char *const s_meta[LH_KIND_COUNT] = {"ui.label", "ui.rect", "ui.bar", "ui.gradient", "ui.list", "ui.qr", "ui.image"};
 
 static lh_t *s_ui;              // session whose lists call row_cb
 static lua_State *s_row_L;      // thread to read rows with (the caller's)
@@ -402,6 +403,147 @@ static int m_qr_text(lua_State *L)
     return 0;
 }
 
+// ---- Images
+//
+// Pixel art: w x h pixels (each side ≤ LH_IMAGE_SIDE), one byte each, a
+// position in the image's palette (0 = transparent). The bytes and the palette
+// sit on the system heap, counted per app against LH_IMAGE_BYTES; the object
+// draws each run of same-coloured pixels as one filled scale x scale block, so
+// scaling needs no bigger buffer and every pixel stays a sharp square.
+
+typedef struct {
+    uint8_t w, h, scale, n;     // n: palette colours
+    lv_color_t *pal;            // pal[i - 1] is colour i, right after px
+    uint8_t px[];               // w * h palette positions, row by row
+} lh_image_t;
+
+static size_t image_bytes(int w, int h, int n)
+{
+    return sizeof(lh_image_t) + (size_t)w * h + (size_t)n * sizeof(lv_color_t);
+}
+
+static lh_image_t *image_of(lv_obj_t *obj)
+{
+    return lv_obj_get_user_data(obj);
+}
+
+static void image_draw(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target_obj(e);
+    lh_image_t *im = image_of(obj);
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t box;
+    lv_obj_get_coords(obj, &box);
+    lv_draw_fill_dsc_t d;
+    lv_draw_fill_dsc_init(&d);
+    d.opa = LV_OPA_COVER;
+    int s = im->scale;
+    for (int y = 0; y < im->h; y++) {
+        const uint8_t *row = im->px + y * im->w;
+        for (int x = 0; x < im->w;) {
+            int c = row[x], end = x + 1;
+            while (end < im->w && row[end] == c) {
+                end++;
+            }
+            if (c) {
+                lv_area_t a = {box.x1 + x * s, box.y1 + y * s, box.x1 + end * s - 1, box.y1 + (y + 1) * s - 1};
+                d.color = im->pal[c - 1];
+                lv_draw_fill(layer, &d, &a);
+            }
+            x = end;
+        }
+    }
+}
+
+static void image_deleted(lv_event_t *e)
+{
+    free(image_of(lv_event_get_target_obj(e)));
+}
+
+// Checks the pixel string at idx and the palette table at pal; returns the
+// palette's size. Nothing is allocated, so an error leaves nothing behind.
+static int image_check(lua_State *L, int idx, int pal, int w, int h)
+{
+    size_t len;
+    const uint8_t *px = (const uint8_t *)luaL_checklstring(L, idx, &len);
+    if (len != (size_t)w * h) {
+        luaL_error(L, "ui.image: %d x %d needs %d bytes of pixels, not %d", w, h, w * h, (int)len);
+    }
+    luaL_checktype(L, pal, LUA_TTABLE);
+    int n = (int)lua_rawlen(L, pal);
+    if (n < 1 || n > 255) {
+        luaL_error(L, "ui.image: the palette needs 1 to 255 colours");
+    }
+    for (int i = 1; i <= n; i++) {
+        lua_rawgeti(L, pal, i);
+        lh_color(L, -1);
+        lua_pop(L, 1);
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (px[i] > n) {
+            luaL_error(L, "ui.image: pixel %d is colour %d, the palette has %d", (int)i + 1, px[i], n);
+        }
+    }
+    return n;
+}
+
+// Image bytes the app has on screen, leaving out `skip`.
+static size_t images_used(lh_t *s, lh_obj_t *skip)
+{
+    size_t used = 0;
+    for (int i = 0; i < LH_OBJ_MAX; i++) {
+        lh_obj_t *o = &s->objs[i];
+        if (o->obj && o->kind == LH_IMAGE && o != skip) {
+            lh_image_t *im = image_of(o->obj);
+            used += image_bytes(im->w, im->h, im->n);
+        }
+    }
+    return used;
+}
+
+// A new image record from arguments image_check passed, or NULL without memory.
+static lh_image_t *image_new(lua_State *L, int idx, int pal, int w, int h, int n, int scale)
+{
+    lh_image_t *im = malloc(image_bytes(w, h, n));
+    if (!im) {
+        return NULL;
+    }
+    im->w = w;
+    im->h = h;
+    im->n = n;
+    im->scale = scale;
+    memcpy(im->px, lua_tostring(L, idx), (size_t)w * h);
+    im->pal = (lv_color_t *)(im->px + (size_t)w * h);
+    for (int i = 1; i <= n; i++) {
+        lua_rawgeti(L, pal, i);
+        im->pal[i - 1] = lh_color(L, -1);
+        lua_pop(L, 1);
+    }
+    return im;
+}
+
+static int m_image_pixels(lua_State *L)
+{
+    lh_obj_t *o = check_kind(L, LH_IMAGE, "image");
+    if (!o) {
+        return 0;
+    }
+    lh_image_t *old = image_of(o->obj);
+    int n = image_check(L, 2, 3, old->w, old->h);
+    lh_t *s = lh_get(L);
+    if (images_used(s, o) + image_bytes(old->w, old->h, n) > LH_IMAGE_BYTES) {
+        luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
+    }
+    lh_image_t *im = image_new(L, 2, 3, old->w, old->h, n, old->scale);
+    if (!im) {
+        luaL_error(L, "ui.image: not enough memory");
+    }
+    lv_obj_set_user_data(o->obj, im);
+    free(old);
+    lv_obj_invalidate(o->obj);
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // ui.* constructors
 
@@ -603,6 +745,38 @@ static int l_qr(lua_State *L)
     }
     lv_obj_set_pos(q, x, y);
     new_obj(L, s, LH_QR, q);
+    return 1;
+}
+
+// ui.image(x, y, w, h, pixels, palette, {scale=1})
+static int l_image(lua_State *L)
+{
+    int x = luaL_checkinteger(L, 1), y = luaL_checkinteger(L, 2);
+    int w = luaL_checkinteger(L, 3), h = luaL_checkinteger(L, 4);
+    if (w < 1 || h < 1 || w > LH_IMAGE_SIDE || h > LH_IMAGE_SIDE) {
+        luaL_error(L, "ui.image: width and height must be 1 to %d", LH_IMAGE_SIDE);
+    }
+    int scale = opt_int(L, 7, "scale", 1);
+    if (scale < 1 || w * scale > OS_ROOT_W || h * scale > OS_ROOT_H) {
+        luaL_error(L, "ui.image: scale %d doesn't fit %d x %d on the screen", scale, w, h);
+    }
+    int n = image_check(L, 5, 6, w, h);
+    lh_t *s = ui_session(L);
+    if (!s) {
+        return 0;
+    }
+    if (images_used(s, NULL) + image_bytes(w, h, n) > LH_IMAGE_BYTES) {
+        luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
+    }
+    lh_image_t *im = image_new(L, 5, 6, w, h, n, scale);
+    if (!im) {
+        luaL_error(L, "ui.image: not enough memory");
+    }
+    lv_obj_t *obj = base_obj(s->area, x, y, w * scale, h * scale);
+    lv_obj_set_user_data(obj, im);
+    lv_obj_add_event_cb(obj, image_draw, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(obj, image_deleted, LV_EVENT_DELETE, NULL);    // frees im with the object
+    new_obj(L, s, LH_IMAGE, obj);
     return 1;
 }
 
@@ -831,11 +1005,12 @@ void lh_open_ui(lua_State *L)
     static const luaL_Reg list[] = {COMMON, {"items", m_items}, {"selected", m_selected}, {"select", m_select},
                                     {NULL, NULL}};
     static const luaL_Reg qr[] = {COMMON, {"text", m_qr_text}, {NULL, NULL}};
+    static const luaL_Reg image[] = {COMMON, {"pixels", m_image_pixels}, {NULL, NULL}};
 #undef COMMON
-    static const luaL_Reg *const methods[LH_KIND_COUNT] = {label, rect, bar, gradient, list, qr};
+    static const luaL_Reg *const methods[LH_KIND_COUNT] = {label, rect, bar, gradient, list, qr, image};
     static const luaL_Reg fns[] = {
         {"label", l_label}, {"rect", l_rect}, {"bar", l_bar}, {"gradient", l_gradient}, {"list", l_list},
-        {"qr", l_qr}, {"bg", l_bg}, {"hint", l_hint}, {"toast", l_toast}, {"confirm", l_confirm}, {"input", l_input},
+        {"qr", l_qr}, {"image", l_image}, {"bg", l_bg}, {"hint", l_hint}, {"toast", l_toast}, {"confirm", l_confirm}, {"input", l_input},
         {"clear", l_clear}, {NULL, NULL},
     };
     lh_t *s = lh_get(L);
