@@ -417,7 +417,7 @@ static int m_qr_text(lua_State *L)
 
 typedef struct {
     uint16_t w, h;
-    uint8_t scale, n;           // n: palette colours
+    uint8_t scale, n;           // n: palette colours (0: rgb565, a file image with 2 bytes a pixel)
     FILE *f;                    // drawn from this card file at byte `at` (px is empty), or NULL
     long at;
     lv_color_t *pal;            // pal[i - 1] is colour i, right after px
@@ -439,6 +439,39 @@ static lh_image_t *image_of(lv_obj_t *obj)
     return lv_obj_get_user_data(obj);
 }
 
+// A full-colour file image: its rows in this strip, read into buf a few at a
+// time and drawn as RGB565 images. With LV_USE_OS 0 every draw task runs as
+// soon as it's created, so buf is free again when lv_draw_image returns.
+static void image_draw_rgb565(lh_image_t *im, lv_layer_t *layer, const lv_area_t *box)
+{
+    static uint16_t buf[2048];                  // 4 KB: 6 rows of 320
+    int y0 = LV_MAX(0, layer->_clip_area.y1 - box->y1);
+    int y1 = LV_MIN(im->h - 1, layer->_clip_area.y2 - box->y1);
+    int per = LV_MAX(1, (int)(sizeof(buf) / 2) / im->w);
+    if (y0 > y1 || fseek(im->f, im->at + (long)y0 * im->w * 2, SEEK_SET)) {
+        return;
+    }
+    lv_image_dsc_t img = {0};
+    img.header.magic = LV_IMAGE_HEADER_MAGIC;
+    img.header.cf = LV_COLOR_FORMAT_RGB565;
+    img.header.w = im->w;
+    img.header.stride = im->w * 2;
+    img.data = (const uint8_t *)buf;
+    lv_draw_image_dsc_t d;
+    lv_draw_image_dsc_init(&d);
+    d.src = &img;
+    for (int y = y0; y <= y1; y += per) {
+        int k = LV_MIN(per, y1 - y + 1);
+        if (fread(buf, 2, (size_t)k * im->w, im->f) != (size_t)k * im->w) {
+            return;
+        }
+        img.header.h = k;
+        img.data_size = (uint32_t)k * im->w * 2;
+        lv_area_t a = {box->x1, box->y1 + y, box->x1 + im->w - 1, box->y1 + y + k - 1};
+        lv_draw_image(layer, &d, &a);
+    }
+}
+
 static void image_draw(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target_obj(e);
@@ -446,6 +479,10 @@ static void image_draw(lv_event_t *e)
     lv_layer_t *layer = lv_event_get_layer(e);
     lv_area_t box;
     lv_obj_get_coords(obj, &box);
+    if (!im->n) {
+        image_draw_rgb565(im, layer, &box);
+        return;
+    }
     lv_draw_fill_dsc_t d;
     lv_draw_fill_dsc_init(&d);
     d.opa = LV_OPA_COVER;
@@ -650,7 +687,8 @@ static int m_image_at(lua_State *L)
     if (!im->f) {
         luaL_error(L, "img:at: only for an image drawn from a file");
     }
-    if (at < 0 || fseek(im->f, 0, SEEK_END) || at + (long)im->w * im->h > ftell(im->f)) {
+    long bytes = (long)im->w * im->h * (im->n ? 1 : 2);
+    if (at < 0 || fseek(im->f, 0, SEEK_END) || at + bytes > ftell(im->f)) {
         luaL_error(L, "img:at: byte %d + %d x %d is past the end of the file", (int)at, im->w, im->h);
     }
     im->at = (long)at;
@@ -678,14 +716,24 @@ static lh_image_t *image_from_file(lua_State *L, lh_t *s, int w, int h, int scal
     if (files >= LH_IMAGE_FILES) {
         luaL_error(L, "ui.image: at most %d images from files at a time", LH_IMAGE_FILES);
     }
+    lua_getfield(L, 5, "format");
+    const char *fmt = luaL_optstring(L, -1, "palette");
+    bool rgb = !strcmp(fmt, "rgb565");
+    if (!rgb && strcmp(fmt, "palette")) {
+        luaL_error(L, "ui.image: format is \"palette\" or \"rgb565\"");
+    }
+    if (rgb && scale != 1) {
+        luaL_error(L, "ui.image: rgb565 images draw at scale 1 only");
+    }
+    lua_pop(L, 1);
     lua_pushnil(L);                             // image_check: no pixel string
     lua_replace(L, 5);
-    int n = image_check(L, 5, 6, w, h);
+    int n = rgb ? 0 : image_check(L, 5, 6, w, h);
     FILE *f = fopen(path, "rb");
     if (!f) {
         luaL_error(L, "ui.image: %s not found", rel);
     }
-    if (at < 0 || fseek(f, 0, SEEK_END) || at + (long)w * h > ftell(f)) {
+    if (at < 0 || fseek(f, 0, SEEK_END) || at + (long)w * h * (rgb ? 2 : 1) > ftell(f)) {
         fclose(f);
         luaL_error(L, "ui.image: %s has no %d x %d pixels at byte %d", rel, w, h, (int)at);
     }
