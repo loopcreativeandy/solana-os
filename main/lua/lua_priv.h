@@ -30,7 +30,8 @@
 #define LH_QR_TEXT_MAX      256         // bytes per code; more doesn't scan off this screen
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
 #define LH_IMAGE_SIDE       320         // ui.image: at most this many pixels wide and high (the scaled image must fit the screen too)
-#define LH_IMAGE_BYTES      (64 * 1024) // ui.image pixels (1 byte each) and palettes per app, on the system heap; malloc usually runs out first
+#define LH_IMAGE_BYTES      (256 * 1024) // ui.image pixels (1 byte each) and palettes per app, on the system heap; malloc runs out first
+#define LH_IMAGE_FILES      2           // ui.image drawn straight from a card file: open files at a time
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
 #define LH_TICK_MS          50          // on_tick period
@@ -245,6 +246,7 @@ void lh_storage_flush(lh_t *s, bool force);
 
 // lua_fs.c: fs and require
 void lh_open_fs(lua_State *L);
+bool lh_fs_file_path(const lh_t *s, const char *rel, char *out, size_t n);   // bundled file -> card path
 void lh_fs_close(lh_t *s);                              // the cached file, when the app stops
 
 // lua_code.c: the store's compiled code, run in place (code.bin)

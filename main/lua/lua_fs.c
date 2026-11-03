@@ -42,6 +42,16 @@ static void full_path(const lh_t *s, const char *rel, char *out, size_t n)
     os_data_path(out, n, r);
 }
 
+// The card path of the app's bundled file `rel`, or false if rel isn't a valid path.
+bool lh_fs_file_path(const lh_t *s, const char *rel, char *out, size_t n)
+{
+    if (strlen(rel) > LUA_PKG_PATH_MAX || !lua_pkg_valid_path(rel)) {
+        return false;
+    }
+    full_path(s, rel, out, n);
+    return true;
+}
+
 // Argument idx as a bundled path into out. dir: none or "" means the top, and
 // a trailing '/' is fine.
 static void check_path(lua_State *L, int idx, char *out, bool dir)

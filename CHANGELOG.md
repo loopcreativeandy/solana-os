@@ -18,7 +18,9 @@ site changes that came with them live in the parent repository.
   is the limit: an image malloc can't give is a Lua error that names the bytes needed and
   the largest free block (apps can `pcall` it and fall back), never a crash. Each new
   image logs its size, free heap and largest block. `img:pixels()` with the same palette
-  length reuses the image's block instead of briefly holding two.
+  length reuses the image's block instead of briefly holding two. `ui.image` takes `nil`
+  pixels for a blank image and `img:rows(y, pixels)` fills it a strip at a time, so an
+  image can be bigger than the app's 48 KB Lua heap (e.g. 200 x 200 from the card).
 
 ## 0.5.5 (2026-11-02)
 

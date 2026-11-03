@@ -13,6 +13,7 @@
 #include "lua_priv.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "lvgl_private.h"
 
 typedef struct {
     uint16_t slot, gen;
@@ -417,6 +418,8 @@ static int m_qr_text(lua_State *L)
 typedef struct {
     uint16_t w, h;
     uint8_t scale, n;           // n: palette colours
+    FILE *f;                    // drawn from this card file at byte `at` (px is empty), or NULL
+    long at;
     lv_color_t *pal;            // pal[i - 1] is colour i, right after px
     uint8_t px[];               // w * h palette positions, row by row
 } lh_image_t;
@@ -424,6 +427,11 @@ typedef struct {
 static size_t image_bytes(int w, int h, int n)
 {
     return sizeof(lh_image_t) + (size_t)w * h + (size_t)n * sizeof(lv_color_t);
+}
+
+static size_t image_size(const lh_image_t *im)
+{
+    return image_bytes(im->f ? 0 : im->w, im->f ? 0 : im->h, im->n);
 }
 
 static lh_image_t *image_of(lv_obj_t *obj)
@@ -442,14 +450,29 @@ static void image_draw(lv_event_t *e)
     lv_draw_fill_dsc_init(&d);
     d.opa = LV_OPA_COVER;
     int s = im->scale;
-    for (int y = 0; y < im->h; y++) {
+    int y0 = 0, y1 = im->h - 1;
+    static uint8_t buf[LH_IMAGE_SIDE];          // a file image's row (LVGL draws on one task)
+    if (im->f) {                                // only the rows in this strip: one card read each
+        y0 = LV_MAX(0, (layer->_clip_area.y1 - box.y1) / s);
+        y1 = LV_MIN(im->h - 1, (layer->_clip_area.y2 - box.y1) / s);
+        if (y0 > y1 || fseek(im->f, im->at + (long)y0 * im->w, SEEK_SET)) {
+            return;
+        }
+    }
+    for (int y = y0; y <= y1; y++) {
         const uint8_t *row = im->px + y * im->w;
+        if (im->f) {
+            if (fread(buf, 1, im->w, im->f) != im->w) {
+                return;
+            }
+            row = buf;
+        }
         for (int x = 0; x < im->w;) {
             int c = row[x], end = x + 1;
             while (end < im->w && row[end] == c) {
                 end++;
             }
-            if (c) {
+            if (c && c <= im->n) {             // a file's bytes aren't checked: others stay transparent
                 lv_area_t a = {box.x1 + x * s, box.y1 + y * s, box.x1 + end * s - 1, box.y1 + (y + 1) * s - 1};
                 d.color = im->pal[c - 1];
                 lv_draw_fill(layer, &d, &a);
@@ -461,17 +484,35 @@ static void image_draw(lv_event_t *e)
 
 static void image_deleted(lv_event_t *e)
 {
-    free(image_of(lv_event_get_target_obj(e)));
+    lh_image_t *im = image_of(lv_event_get_target_obj(e));
+    if (im->f) {
+        fclose(im->f);
+    }
+    free(im);
 }
 
-// Checks the pixel string at idx and the palette table at pal; returns the
-// palette's size. Nothing is allocated, so an error leaves nothing behind.
+// Every byte of px must be a palette position, 0..n.
+static void image_check_bytes(lua_State *L, const uint8_t *px, size_t len, int n, size_t first)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (px[i] > n) {
+            luaL_error(L, "ui.image: pixel %d is colour %d, the palette has %d", (int)(first + i) + 1, px[i], n);
+        }
+    }
+}
+
+// Checks the pixel string at idx (or nil: a blank image, filled later with
+// img:rows) and the palette table at pal; returns the palette's size. Nothing
+// is allocated, so an error leaves nothing behind.
 static int image_check(lua_State *L, int idx, int pal, int w, int h)
 {
-    size_t len;
-    const uint8_t *px = (const uint8_t *)luaL_checklstring(L, idx, &len);
-    if (len != (size_t)w * h) {
-        luaL_error(L, "ui.image: %d x %d needs %d bytes of pixels, not %d", w, h, w * h, (int)len);
+    size_t len = 0;
+    const uint8_t *px = NULL;
+    if (!lua_isnil(L, idx)) {
+        px = (const uint8_t *)luaL_checklstring(L, idx, &len);
+        if (len != (size_t)w * h) {
+            luaL_error(L, "ui.image: %d x %d needs %d bytes of pixels, not %d", w, h, w * h, (int)len);
+        }
     }
     luaL_checktype(L, pal, LUA_TTABLE);
     int n = (int)lua_rawlen(L, pal);
@@ -483,11 +524,7 @@ static int image_check(lua_State *L, int idx, int pal, int w, int h)
         lh_color(L, -1);
         lua_pop(L, 1);
     }
-    for (size_t i = 0; i < len; i++) {
-        if (px[i] > n) {
-            luaL_error(L, "ui.image: pixel %d is colour %d, the palette has %d", (int)i + 1, px[i], n);
-        }
-    }
+    image_check_bytes(L, px, len, n, 0);
     return n;
 }
 
@@ -499,7 +536,7 @@ static size_t images_used(lh_t *s, lh_obj_t *skip)
         lh_obj_t *o = &s->objs[i];
         if (o->obj && o->kind == LH_IMAGE && o != skip) {
             lh_image_t *im = image_of(o->obj);
-            used += image_bytes(im->w, im->h, im->n);
+            used += image_size(im);
         }
     }
     return used;
@@ -512,7 +549,11 @@ static void image_fill(lua_State *L, lh_image_t *im, int idx, int pal, int n)
 {
     int w = im->w, h = im->h;
     im->n = n;
-    memcpy(im->px, lua_tostring(L, idx), (size_t)w * h);
+    if (lua_isnil(L, idx)) {
+        memset(im->px, 0, (size_t)w * h);
+    } else {
+        memcpy(im->px, lua_tostring(L, idx), (size_t)w * h);
+    }
     im->pal = (lv_color_t *)(im->px + (size_t)w * h);
     for (int i = 1; i <= n; i++) {
         lua_rawgeti(L, pal, i);
@@ -537,6 +578,8 @@ static lh_image_t *image_new(lua_State *L, int idx, int pal, int w, int h, int n
     im->w = w;
     im->h = h;
     im->scale = scale;
+    im->f = NULL;
+    im->at = 0;
     image_fill(L, im, idx, pal, n);
     return im;
 }
@@ -548,6 +591,9 @@ static int m_image_pixels(lua_State *L)
         return 0;
     }
     lh_image_t *old = image_of(o->obj);
+    if (old->f) {
+        luaL_error(L, "img:pixels: this image draws from a file, use img:at");
+    }
     int n = image_check(L, 2, 3, old->w, old->h);
     lh_t *s = lh_get(L);
     if (images_used(s, o) + image_bytes(old->w, old->h, n) > LH_IMAGE_BYTES) {
@@ -562,6 +608,105 @@ static int m_image_pixels(lua_State *L)
     }
     lv_obj_invalidate(o->obj);
     return 0;
+}
+
+// img:rows(y, pixels): whole rows from row y (0 = top) down, palette as it is.
+// Lets an app fill an image bigger than its Lua heap a strip at a time.
+static int m_image_rows(lua_State *L)
+{
+    lh_obj_t *o = check_kind(L, LH_IMAGE, "image");
+    if (!o) {
+        return 0;
+    }
+    lh_image_t *im = image_of(o->obj);
+    if (im->f) {
+        luaL_error(L, "img:rows: this image draws from a file, use img:at");
+    }
+    int y = luaL_checkinteger(L, 2);
+    size_t len;
+    const uint8_t *px = (const uint8_t *)luaL_checklstring(L, 3, &len);
+    if (len == 0 || len % im->w) {
+        luaL_error(L, "img:rows: %d bytes aren't whole rows of %d", (int)len, im->w);
+    }
+    int rows = (int)(len / im->w);
+    if (y < 0 || y + rows > im->h) {
+        luaL_error(L, "img:rows: rows %d to %d, the image has 0 to %d", y, y + rows - 1, im->h - 1);
+    }
+    image_check_bytes(L, px, len, im->n, (size_t)y * im->w);
+    memcpy(im->px + (size_t)y * im->w, px, len);
+    lv_obj_invalidate(o->obj);
+    return 0;
+}
+
+// img:at(byte): a file image draws from this byte of its file on (the next frame).
+static int m_image_at(lua_State *L)
+{
+    lh_obj_t *o = check_kind(L, LH_IMAGE, "image");
+    if (!o) {
+        return 0;
+    }
+    lh_image_t *im = image_of(o->obj);
+    lua_Integer at = luaL_checkinteger(L, 2);
+    if (!im->f) {
+        luaL_error(L, "img:at: only for an image drawn from a file");
+    }
+    if (at < 0 || fseek(im->f, 0, SEEK_END) || at + (long)im->w * im->h > ftell(im->f)) {
+        luaL_error(L, "img:at: byte %d + %d x %d is past the end of the file", (int)at, im->w, im->h);
+    }
+    im->at = (long)at;
+    lv_obj_invalidate(o->obj);
+    return 0;
+}
+
+// ui.image with {file=, at=} instead of a pixel string: only the header and the
+// palette go on the heap; image_draw reads each strip's rows from the card.
+static lh_image_t *image_from_file(lua_State *L, lh_t *s, int w, int h, int scale)
+{
+    lua_getfield(L, 5, "file");
+    const char *rel = luaL_checkstring(L, -1);
+    char path[160];
+    if (!lh_fs_file_path(s, rel, path, sizeof(path))) {
+        luaL_error(L, "ui.image: file paths are lowercase a-z 0-9 _ - . with / between folders");
+    }
+    lua_pop(L, 1);
+    lua_Integer at = opt_int(L, 5, "at", 0);
+    int files = 0;
+    for (int i = 0; i < LH_OBJ_MAX; i++) {
+        lh_obj_t *o = &s->objs[i];
+        files += o->obj && o->kind == LH_IMAGE && image_of(o->obj)->f;
+    }
+    if (files >= LH_IMAGE_FILES) {
+        luaL_error(L, "ui.image: at most %d images from files at a time", LH_IMAGE_FILES);
+    }
+    lua_pushnil(L);                             // image_check: no pixel string
+    lua_replace(L, 5);
+    int n = image_check(L, 5, 6, w, h);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        luaL_error(L, "ui.image: %s not found", rel);
+    }
+    if (at < 0 || fseek(f, 0, SEEK_END) || at + (long)w * h > ftell(f)) {
+        fclose(f);
+        luaL_error(L, "ui.image: %s has no %d x %d pixels at byte %d", rel, w, h, (int)at);
+    }
+    lh_image_t *im = malloc(image_bytes(0, 0, n));
+    if (!im) {
+        fclose(f);
+        luaL_error(L, "ui.image: not enough memory");
+    }
+    im->w = w;
+    im->h = h;
+    im->scale = scale;
+    im->n = n;
+    im->f = f;
+    im->at = (long)at;
+    im->pal = (lv_color_t *)im->px;
+    for (int i = 1; i <= n; i++) {
+        lua_rawgeti(L, 6, i);
+        im->pal[i - 1] = lh_color(L, -1);
+        lua_pop(L, 1);
+    }
+    return im;
 }
 
 // ---------------------------------------------------------------------------
@@ -780,15 +925,25 @@ static int l_image(lua_State *L)
     if (scale < 1 || w * scale > OS_ROOT_W || h * scale > OS_ROOT_H) {
         luaL_error(L, "ui.image: scale %d doesn't fit %d x %d on the screen", scale, w, h);
     }
-    int n = image_check(L, 5, 6, w, h);
+    lh_image_t *im;
+    if (lua_istable(L, 5)) {
+        lh_t *s = ui_session(L);
+        if (!s) {
+            return 0;
+        }
+        im = image_from_file(L, s, w, h, scale);
+    } else {
+        int n = image_check(L, 5, 6, w, h);
+        lh_t *s = ui_session(L);
+        if (!s) {
+            return 0;
+        }
+        if (images_used(s, NULL) + image_bytes(w, h, n) > LH_IMAGE_BYTES) {
+            luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
+        }
+        im = image_new(L, 5, 6, w, h, n, scale);
+    }
     lh_t *s = ui_session(L);
-    if (!s) {
-        return 0;
-    }
-    if (images_used(s, NULL) + image_bytes(w, h, n) > LH_IMAGE_BYTES) {
-        luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
-    }
-    lh_image_t *im = image_new(L, 5, 6, w, h, n, scale);
     lv_obj_t *obj = base_obj(s->area, x, y, w * scale, h * scale);
     lv_obj_set_user_data(obj, im);
     lv_obj_add_event_cb(obj, image_draw, LV_EVENT_DRAW_MAIN, NULL);
@@ -1022,7 +1177,7 @@ void lh_open_ui(lua_State *L)
     static const luaL_Reg list[] = {COMMON, {"items", m_items}, {"selected", m_selected}, {"select", m_select},
                                     {NULL, NULL}};
     static const luaL_Reg qr[] = {COMMON, {"text", m_qr_text}, {NULL, NULL}};
-    static const luaL_Reg image[] = {COMMON, {"pixels", m_image_pixels}, {NULL, NULL}};
+    static const luaL_Reg image[] = {COMMON, {"pixels", m_image_pixels}, {"rows", m_image_rows}, {"at", m_image_at}, {NULL, NULL}};
 #undef COMMON
     static const luaL_Reg *const methods[LH_KIND_COUNT] = {label, rect, bar, gradient, list, qr, image};
     static const luaL_Reg fns[] = {

@@ -184,7 +184,7 @@ list:items(newItems)  list:selected() --> index  list:select(i)  list:remove()
 local q = ui.qr(x, y, size, text)       -- a QR code, size x size px (25..218), text ≤ 256 bytes
 q:text("solana:https://...")  q:pos(x, y)  q:show(b)  q:remove()
 local img = ui.image(x, y, w, h, pixels, palette, {scale=1})   -- pixel art, as big as the screen and memory allow
-img:pixels(pixels, palette)  img:pos(x, y)  img:show(b)  img:remove()
+img:pixels(pixels, palette)  img:rows(y, pixels)  img:pos(x, y)  img:show(b)  img:remove()
 ui.hint("SELECT jump   CANCEL exit")    -- key hint pinned to the bottom (16 px)
 ui.toast("Saved")
 ui.confirm("Reset the score?", function(yes) end)      -- modal, SELECT = yes, CANCEL = no
@@ -220,6 +220,12 @@ memory for W x H (need N bytes, largest free block M)`, never a crash, so big im
 belong in a `pcall` with a smaller fallback. (Solana OS 0.5.5A and older: each side 1 to
 64, 16 KB per app.)
 
+An image bigger than the app's Lua heap (48 KB) or one `fs.read` (16 KB) can't be passed as
+one string. Pass `nil` as `pixels` for a blank (transparent) image, then fill it a strip at
+a time with `img:rows(y, pixels)`: whole rows from row `y` (0 = top), any number of them,
+with the image's palette. Small strips keep the Lua heap low (Solana OS 0.5.5B; `img.rows`
+is `nil` before).
+
 ```lua
 -- an 8 x 8 heart, drawn 10 x larger
 local P = {0xE0245E, 0xFFFFFF}
@@ -234,6 +240,10 @@ A bundled file works the same way: `ui.image(0, 0, 24, 24, fs.read("monkey.bin")
 -- try a big picture, fall back to a small one
 local ok, img = pcall(ui.image, 40, 0, 108, 108, fs.read("face108.bin"), P, {scale = 2})
 if not ok then img = ui.image(40, 0, 64, 64, fs.read("face64.bin"), P, {scale = 3}) end
+
+-- 200 x 200 (40 KB) from the card, 20 rows (4 KB) at a time
+local img = ui.image(0, 0, 200, 200, nil, P)
+for y = 0, 199, 20 do img:rows(y, fs.read("face200.bin", y * 200, 20 * 200)) end
 ```
 
 ### `led` (permission `led`)
