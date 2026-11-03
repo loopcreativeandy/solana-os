@@ -86,13 +86,26 @@ def live(a):
     import serial, tkinter as tk
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = a.port, 115200, 0
-    s.dtr = s.rts = False       # don't hold the chip in reset/boot
+    # Don't touch DTR/RTS: setting them to False drops DTR first, so for a moment only RTS is on,
+    # which is the esptool reset signal (the badge rebooted on every connect).
     s.open()
+    # Some systems still reset the badge on open: if it's booting, wait for its console first,
+    # otherwise "mirror on" is lost during the boot and the window stays black.
+    head, t0 = b"", time.time()
+    while time.time() - t0 < 1.5:
+        head += s.read(4096); time.sleep(0.02)
+    if b"ESP-ROM" in head or b"rst:" in head:
+        print("badge is rebooting, waiting for the console...")
+        t0 = time.time()
+        while b"console ready" not in head and time.time() - t0 < 20:
+            head += s.read(4096); time.sleep(0.02)
+        time.sleep(1.5)
+    s.reset_input_buffer()
     s.write(b"\r\nmirror on" + (b" %d" % a.baud if a.baud != 115200 else b"") + b"\r\n")
 
     scr = Screen()
     root = tk.Tk()
-    root.title("Solana OS badge")
+    root.title("Solana OS badge (waiting for the first frame...)")
     img = tk.PhotoImage(width=W, height=H)
     shown = img.zoom(a.zoom)
     label = tk.Label(root, image=shown, bd=0)
@@ -118,6 +131,8 @@ def live(a):
             img.configure(data=scr.ppm(), format="PPM")
             shown = img.zoom(a.zoom)
             label.configure(image=shown)
+            if scr.frames == 1:
+                root.title("Solana OS badge")
             if a.png:
                 scr.save(a.png)
         root.after(15, poll)
