@@ -22,6 +22,23 @@ site changes that came with them live in the parent repository.
   pixels for a blank image and `img:rows(y, pixels)` fills it a strip at a time, so an
   image can be bigger than the app's 48 KB Lua heap (e.g. 200 x 200 from the card).
 
+## 0.5.6 (2026-11-03)
+
+- **Badges as quest beacons** (docs in the parent repository: MESH.md "Badge beacons",
+  API.md "Badge beacons"). A QuestMaker pairs a badge from its console (`beacon pair`, run by
+  the site's `/admin/beacons/badge` over USB, or the emulator page) and adopts it with a
+  character. Nothing is erased: the owner keeps everything, and the launcher gains
+  **Beacon** (after Quests, only on paired badges). While Beacon is open the badge plays
+  the character: every frame goes out under the beacon id, its HELLO is the character's
+  with nonces rotating every 30 s, quest RELAYs go to `POST /api/device/beacon/relay` over
+  the badge's own connection (answers cached 20 s for retries), and the screen shows the
+  character and the scan code for emulators. The mesh channel follows the joined network
+  meanwhile, and the screen warns when that isn't the mesh channel. A restart with the app
+  open opens it again; CANCEL or HOME stops it all. `game/beacon.c`, `apps/beacon/`.
+- `os_app_t.visible`: apps the launcher lists only while it returns true.
+- `os_mesh_beacon()`, `os_mesh_beacon_hello()`, `os_mesh_tag()`; hello `beacon` kept in NVS
+  (`cloud/beacon`).
+
 ## 0.5.5 (2026-11-02)
 
 - Fixes 0.5.4 going offline after ~45 minutes. ESP-IDF 6.0.1's HTTP client opened a new
