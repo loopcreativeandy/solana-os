@@ -9,8 +9,11 @@
 The window is a plain Tk window (OBS: Window Capture). Closing it sends "mirror off", which also puts the
 badge back to its normal speed; if this script dies at a high speed, reboot the badge or reconnect with
 --baud <that speed> and close the window. Needs pyserial; --png needs Pillow.
+
+The terminal it runs in is the badge console: badge output is printed there, and lines you type are sent
+to the badge (e.g. "help", "lua mem"). Status lines from this script start with "[mirror]".
 """
-import argparse, base64, os, sys, time
+import argparse, base64, os, sys, threading, time
 
 W, H = 320, 240
 
@@ -89,6 +92,7 @@ def live(a):
     # Don't touch DTR/RTS: setting them to False drops DTR first, so for a moment only RTS is on,
     # which is the esptool reset signal (the badge rebooted on every connect).
     s.open()
+    print(f"[mirror] opened {a.port}, listening 1.5 s...")
     # Some systems still reset the badge on open: if it's booting, wait for its console first,
     # otherwise "mirror on" is lost during the boot and the window stays black.
     head, t0 = b"", time.time()
@@ -100,8 +104,20 @@ def live(a):
         while b"console ready" not in head and time.time() - t0 < 20:
             head += s.read(4096); time.sleep(0.02)
         time.sleep(1.5)
+    else:
+        print(f"[mirror] no reboot seen ({len(head)} bytes received)")
     s.reset_input_buffer()
-    s.write(b"\r\nmirror on" + (b" %d" % a.baud if a.baud != 115200 else b"") + b"\r\n")
+    cmd = b"mirror on" + (b" %d" % a.baud if a.baud != 115200 else b"")
+    s.write(b"\r\n" + cmd + b"\r\n")
+    print(f"[mirror] sent '{cmd.decode()}', waiting for 'MIR ON' from the badge. Type console commands here.")
+    lock = threading.Lock()
+
+    def typing():                  # the terminal doubles as the badge console
+        for typed in sys.stdin:
+            with lock:
+                s.write(typed.rstrip("\r\n").encode() + b"\r\n")
+    threading.Thread(target=typing, daemon=True).start()
+    stats = {"bytes": 0, "mir": 0, "last": time.time(), "on": False}
 
     scr = Screen()
     root = tk.Tk()
@@ -114,7 +130,15 @@ def live(a):
 
     def poll():
         nonlocal buf, shown
-        buf += s.read(65536)
+        with lock:
+            got = s.read(65536)
+        buf += got
+        stats["bytes"] += len(got)
+        if time.time() - stats["last"] > 5:
+            stats["last"] = time.time()
+            if not stats["on"]:
+                print(f"[mirror] still no 'MIR ON': {stats['bytes']} bytes from the badge so far"
+                      + ("" if stats["bytes"] else " (wrong port, or the badge isn't talking?)"))
         *lines, buf = buf.split(b"\n")
         frame = False
         for raw in lines:
@@ -124,6 +148,10 @@ def live(a):
                 s.baudrate = int(line.split()[2])
                 buf = b""
             elif line.startswith("MIR "):
+                stats["mir"] += 1
+                if line.startswith("MIR ON") and not stats["on"]:
+                    stats["on"] = True
+                    print(f"[mirror] badge answered: {line}")
                 frame |= scr.line(line)
             elif line and not a.quiet:
                 print(line)
@@ -133,12 +161,14 @@ def live(a):
             label.configure(image=shown)
             if scr.frames == 1:
                 root.title("Solana OS badge")
+                print("[mirror] first frame shown")
             if a.png:
                 scr.save(a.png)
         root.after(15, poll)
 
     def close():
-        s.write(b"\r\nmirror off\r\n")
+        with lock:
+            s.write(b"\r\nmirror off\r\n")
         s.flush()
         time.sleep(0.3)
         s.close()
