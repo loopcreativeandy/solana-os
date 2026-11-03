@@ -18,7 +18,7 @@ typedef enum {
     OS_KEY_NONE = -1,
 } os_key_t;
 
-// Default wiring, used until the buttons are calibrated (HW Debug > Input >
+// Default wiring, used until the buttons are calibrated (Debug > Input >
 // SELECT, or console "open calib"). The calibrated map lives in NVS, so a
 // board revision with different wiring needs no firmware change.
 // Measured on the prototype with the calibration app.

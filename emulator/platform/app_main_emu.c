@@ -10,6 +10,7 @@
 #include "nvs_flash.h"
 #include "bsp.h"
 #include "core/os_settings.h"
+#include "core/os_log.h"
 #include "core/os.h"
 #include "core/os_wifi.h"
 #include "core/os_cloud.h"
@@ -75,6 +76,7 @@ static void boot_sweep(void)
 
 void app_main(void)
 {
+    os_log_init();      // first: keeps the console lines for Debug > Console
     ESP_LOGI(TAG, "Solana OS starting (browser emulator)");
 
     esp_err_t err = nvs_flash_init();

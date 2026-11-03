@@ -1,5 +1,6 @@
-// Hardware Debug: live check of every peripheral on the badge (buttons, RGB
-// LEDs, microSD, display, battery, system). Port of the reference dashboard.
+// Debug: the console's recent lines (core/os_log.c) and a live check of every
+// peripheral on the badge (buttons, RGB LEDs, microSD, display, battery,
+// system). The hardware pages are a port of the reference dashboard.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,11 +19,12 @@
 #include "esp_idf_version.h"
 #include "bsp.h"
 #include "core/os.h"
+#include "core/os_log.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
 
-enum { PAGE_INPUT, PAGE_SD, PAGE_DISPLAY, PAGE_SYSTEM, PAGE_COUNT };
-static const char *const page_names[PAGE_COUNT] = {"Input", "microSD", "Display", "System"};
+enum { PAGE_CONSOLE, PAGE_INPUT, PAGE_SD, PAGE_DISPLAY, PAGE_SYSTEM, PAGE_COUNT };
+static const char *const page_names[PAGE_COUNT] = {"Console", "Input", "microSD", "Display", "System"};
 
 #define PAGE_Y      UI_TABS_H
 #define PAGE_H      (OS_ROOT_H - UI_TABS_H - UI_HINT_H)
@@ -30,8 +32,154 @@ static const char *const page_names[PAGE_COUNT] = {"Input", "microSD", "Display"
 static lv_obj_t *s_root, *s_tabs, *s_page, *s_hint;
 static int s_cur;
 static int s_tick;
+static bool s_calibrating;     // back from calibration: open on Input again
 
 static void build_page(int page);
+
+// ---------------------------------------------------------------------------
+// Console: the newest lines, wrapped to the screen; UP/DOWN scroll back by
+// whole lines (the view then stays put while new lines come in), DOWN back at
+// the end follows again.
+
+#define CON_LINE_MAX 168
+static lv_obj_t *s_con;
+static int s_cols, s_rows;
+static bool s_follow;
+static uint32_t s_top, s_con_gen;
+static char s_con_text[1200];
+
+static int line_rows(const char *line)
+{
+    int len = strlen(line);
+    return len ? (len + s_cols - 1) / s_cols : 1;
+}
+
+// The first line on screen when following, and how many of its rows don't fit.
+static uint32_t follow_top(int *skip)
+{
+    char line[CON_LINE_MAX];
+    uint32_t first = os_log_first(), n = os_log_next();
+    int rows = 0;
+    *skip = 0;
+    while (n > first && rows < s_rows) {
+        if (!os_log_line(n - 1, line, sizeof(line))) {
+            break;
+        }
+        n--;
+        rows += line_rows(line);
+    }
+    if (rows > s_rows) {
+        *skip = rows - s_rows;
+    }
+    return n;
+}
+
+static void con_render(void)
+{
+    char line[CON_LINE_MAX];
+    int skip = 0;
+    s_con_gen = os_log_gen();
+    if (os_log_next() == os_log_first()) {
+        lv_obj_set_style_text_color(s_con, ui_col(COL_DIM), 0);
+        lv_label_set_text(s_con, "Nothing yet.\n\nLua print(), app errors and the\nsystem log show up here.");
+        return;
+    }
+    lv_obj_set_style_text_color(s_con, ui_col(COL_TEXT), 0);
+    uint32_t n = s_follow ? follow_top(&skip) : s_top;
+    if (n < os_log_first()) {
+        n = s_top = os_log_first();
+    }
+    size_t len = 0;
+    int rows = 0;
+    for (; rows < s_rows && os_log_line(n, line, sizeof(line)); n++) {
+        int l = strlen(line);
+        for (int at = 0; rows < s_rows && (at < l || (at == 0 && l == 0)); at += s_cols) {
+            if (skip > 0) {
+                skip--;
+                continue;
+            }
+            int take = l - at < s_cols ? l - at : s_cols;
+            if (len + take + 2 > sizeof(s_con_text)) {
+                break;
+            }
+            if (rows++) {
+                s_con_text[len++] = '\n';
+            }
+            memcpy(s_con_text + len, line + at, take);
+            len += take;
+            if (l == 0) {
+                break;
+            }
+        }
+    }
+    s_con_text[len] = 0;
+    lv_label_set_text(s_con, s_con_text);
+}
+
+static void con_hint(void)
+{
+    lv_label_set_text(s_hint, s_follow
+        ? LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " tab   " LV_SYMBOL_UP LV_SYMBOL_DOWN " scroll   SELECT clear"
+        : LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " tab   " LV_SYMBOL_UP LV_SYMBOL_DOWN " scroll (paused)   SELECT clear");
+}
+
+static void build_console(lv_obj_t *p)
+{
+    const lv_font_t *f = &sol_mono_12;
+    int gw = 1;
+    for (uint32_t c = 0x21; c < 0x7F; c++) {     // widest glyph: no line may wrap on its own
+        int w = lv_font_get_glyph_width(f, c, 0);
+        gw = w > gw ? w : gw;
+    }
+    s_cols = (OS_ROOT_W - 8) / gw;
+    s_rows = (PAGE_H - 4) / lv_font_get_line_height(f);
+    s_con = ui_label(p, f, COL_TEXT, "");
+    lv_obj_set_pos(s_con, 4, 2);
+    lv_obj_set_size(s_con, OS_ROOT_W - 8, PAGE_H - 4);
+    lv_label_set_long_mode(s_con, LV_LABEL_LONG_MODE_CLIP);
+    s_follow = true;
+    con_render();
+}
+
+static bool key_console(os_key_t k, bool repeat)
+{
+    int skip;
+    switch (k) {
+    case OS_KEY_UP:
+        if (s_follow) {
+            s_top = follow_top(&skip);
+            s_follow = false;
+        }
+        if (s_top > os_log_first()) {
+            s_top--;
+        }
+        break;
+    case OS_KEY_DOWN:
+        if (!s_follow && ++s_top >= follow_top(&skip)) {
+            s_follow = true;
+        }
+        break;
+    case OS_KEY_SELECT:
+        if (repeat) {
+            return true;
+        }
+        os_log_clear();
+        s_follow = true;
+        break;
+    default:
+        return k != OS_KEY_BACK;
+    }
+    con_hint();
+    con_render();
+    return true;
+}
+
+static void tick_console(void)
+{
+    if (os_log_gen() != s_con_gen) {
+        con_render();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Input: buttons + LED mirror
@@ -559,6 +707,10 @@ static void build_page(int page)
     s_led_mode = page == PAGE_DISPLAY ? s_led_mode : LED_OFF;
     leds_off();
     switch (page) {
+    case PAGE_CONSOLE:
+        build_console(s_page);
+        con_hint();
+        break;
     case PAGE_INPUT:
         build_input(s_page);
         lv_label_set_text(s_hint, LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " tab   SELECT calibrate   CANCEL exit");
@@ -591,7 +743,8 @@ static void enter(lv_obj_t *root)
     lv_obj_set_scrollable(s_page, false);
     s_hint = ui_hint(root, "");
     s_led_mode = LED_OFF;
-    build_page(PAGE_INPUT);
+    build_page(s_calibrating ? PAGE_INPUT : PAGE_CONSOLE);
+    s_calibrating = false;
 }
 
 static void on_leave(void)
@@ -609,8 +762,10 @@ static bool on_key(os_key_t k, bool repeat)
         return true;
     }
     switch (s_cur) {
+    case PAGE_CONSOLE: return key_console(k, repeat);
     case PAGE_INPUT:
         if (k == OS_KEY_SELECT) {
+            s_calibrating = true;
             os_launch(&os_calibrate);
             return true;
         }
@@ -625,6 +780,7 @@ static void on_tick(void)
 {
     s_tick++;
     switch (s_cur) {
+    case PAGE_CONSOLE: tick_console(); break;
     case PAGE_INPUT:   tick_input(); break;
     case PAGE_SD:      tick_sd(); break;
     case PAGE_DISPLAY:
@@ -638,7 +794,7 @@ static void on_tick(void)
 
 const os_app_t app_debug = {
     .id = "debug",
-    .name = "HW Debug",
+    .name = "Debug",
     .symbol = LV_SYMBOL_SETTINGS,
     .accent = COL_YELLOW,
     .on_enter = enter,

@@ -7,6 +7,7 @@
 #include "nvs_flash.h"
 #include "bsp.h"
 #include "core/os_settings.h"
+#include "core/os_log.h"
 #include "core/os.h"
 #include "core/os_wifi.h"
 #include "core/os_cloud.h"
@@ -38,6 +39,7 @@ static void boot_sweep(void)
 
 void app_main(void)
 {
+    os_log_init();      // first: keeps the console lines for Debug > Console
     ESP_LOGI(TAG, "Solana OS starting");
     esp_log_level_set("wifi", ESP_LOG_ERROR);       // the driver's PHY tables flood the console
     esp_log_level_set("wifi_init", ESP_LOG_WARN);

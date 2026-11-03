@@ -8,6 +8,13 @@ site changes that came with them live in the parent repository.
 
 ## Unreleased
 
+- **Console on the badge**: HW Debug is now **Debug**, and its first tab, **Console**, shows
+  the newest console lines: the system log (ESP_LOGx), Lua `print()` and Lua app errors,
+  kept in a 6 KB RAM buffer from boot (`core/os_log.c`, oldest lines dropped first; lines
+  over 160 characters are cut). Lines wrap to the screen; UP/DOWN scroll back by line (the
+  view stays put while new lines arrive, DOWN at the end follows again), SELECT clears.
+  Console command replies and the screen mirror's frames aren't kept. Debug opens on
+  Console (on Input again when coming back from calibration).
 - **Lua images**: `ui.image(x, y, w, h, pixels, palette, {scale=})` and `img:pixels()` draw
   pixel art up to 64 x 64, one palette byte per pixel (0 = transparent), scaled up
   without smoothing: each run of same-coloured pixels is drawn as one filled block, so

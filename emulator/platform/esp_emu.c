@@ -18,6 +18,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "core/os_log.h"
 #include "esp_mac.h"
 #include "esp_app_desc.h"
 #include "esp_chip_info.h"
@@ -107,7 +108,10 @@ void esp_log_write(esp_log_level_t level, const char *tag, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    printf("%c (%lu) %s: %s\n", letters[level], (unsigned long)esp_log_timestamp(), tag, msg);
+    char line[300];
+    int n = snprintf(line, sizeof(line), "%c (%lu) %s: %s\n", letters[level], (unsigned long)esp_log_timestamp(), tag, msg);
+    os_log_write(line, n < (int)sizeof(line) ? (size_t)n : sizeof(line) - 1);
+    fputs(line, stdout);
 }
 
 const char *esp_err_to_name(esp_err_t code)

@@ -38,6 +38,7 @@
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/os_http.h"
+#include "core/os_log.h"
 #include "vendor/lualib.h"
 #include "lua_install.h"
 #include "lua_priv.h"
@@ -245,7 +246,7 @@ static void fail(lh_t *s, int rc, const char *msg_in)
         }
     }
     lua_settop(L, 0);
-    printf("[lua:%s] %s: %s\n", s->pkg.id, title, msg);
+    os_log_printf("[lua:%s] %s: %s\n", s->pkg.id, title, msg);
     strlcpy(s->err, msg, sizeof(s->err));
     s->failed = true;
     lh_mesh_mute();
@@ -279,7 +280,7 @@ bool lh_callback(lh_t *s, lua_CFunction fn, void *arg)
     if (rc != LUA_OK) {
         if (s->ui_off) {
             // Already closing (on_exit or a finalizer failed): just log it.
-            printf("[lua:%s] %s\n", s->pkg.id, lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "error");
+            os_log_printf("[lua:%s] %s\n", s->pkg.id, lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "error");
             lua_settop(L, 0);
             return false;
         }
@@ -318,7 +319,7 @@ static int l_print(lua_State *L)
         luaL_addvalue(&b);
     }
     luaL_pushresult(&b);
-    printf("[%s] %s\n", lh_get(L)->pkg.id, lua_tostring(L, -1));
+    os_log_printf("[%s] %s\n", lh_get(L)->pkg.id, lua_tostring(L, -1));
     return 0;
 }
 
@@ -771,7 +772,7 @@ bool lua_host_launch(const char *id)
     xSemaphoreGive(lh_mx);
     if (why) {
         os_toast("%s", why);
-        printf("lua: %s: %s\n", id, why);
+        os_log_printf("lua: %s: %s\n", id, why);
         return false;
     }
     if (os_current() == &lua_host_app) {
