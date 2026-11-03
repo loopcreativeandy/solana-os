@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "lua_priv.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 
 typedef struct {
     uint16_t slot, gen;
@@ -407,12 +409,14 @@ static int m_qr_text(lua_State *L)
 //
 // Pixel art: w x h pixels (each side ≤ LH_IMAGE_SIDE), one byte each, a
 // position in the image's palette (0 = transparent). The bytes and the palette
-// sit on the system heap, counted per app against LH_IMAGE_BYTES; the object
+// sit on the system heap in one block, counted per app against LH_IMAGE_BYTES;
+// a block malloc can't give is a Lua error the app can pcall, never a crash. The object
 // draws each run of same-coloured pixels as one filled scale x scale block, so
 // scaling needs no bigger buffer and every pixel stays a sharp square.
 
 typedef struct {
-    uint8_t w, h, scale, n;     // n: palette colours
+    uint16_t w, h;
+    uint8_t scale, n;           // n: palette colours
     lv_color_t *pal;            // pal[i - 1] is colour i, right after px
     uint8_t px[];               // w * h palette positions, row by row
 } lh_image_t;
@@ -501,17 +505,13 @@ static size_t images_used(lh_t *s, lh_obj_t *skip)
     return used;
 }
 
-// A new image record from arguments image_check passed, or NULL without memory.
-static lh_image_t *image_new(lua_State *L, int idx, int pal, int w, int h, int n, int scale)
+static const char *TAG = "lua_ui";
+
+// Copies pixels and palette that image_check passed into im (sized for n colours).
+static void image_fill(lua_State *L, lh_image_t *im, int idx, int pal, int n)
 {
-    lh_image_t *im = malloc(image_bytes(w, h, n));
-    if (!im) {
-        return NULL;
-    }
-    im->w = w;
-    im->h = h;
+    int w = im->w, h = im->h;
     im->n = n;
-    im->scale = scale;
     memcpy(im->px, lua_tostring(L, idx), (size_t)w * h);
     im->pal = (lv_color_t *)(im->px + (size_t)w * h);
     for (int i = 1; i <= n; i++) {
@@ -519,6 +519,25 @@ static lh_image_t *image_new(lua_State *L, int idx, int pal, int w, int h, int n
         im->pal[i - 1] = lh_color(L, -1);
         lua_pop(L, 1);
     }
+}
+
+// A new image record from arguments image_check passed; raises an error the
+// app can pcall (and fall back to a smaller image) when malloc can't give it.
+static lh_image_t *image_new(lua_State *L, int idx, int pal, int w, int h, int n, int scale)
+{
+    size_t need = image_bytes(w, h, n);
+    lh_image_t *im = malloc(need);
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "image %d x %d: %u bytes %s, free %u, largest block %u", w, h, (unsigned)need,
+             im ? "ok" : "FAILED", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT), (unsigned)largest);
+    if (!im) {
+        luaL_error(L, "ui.image: not enough memory for %d x %d (need %d bytes, largest free block %d)",
+                   w, h, (int)need, (int)largest);
+    }
+    im->w = w;
+    im->h = h;
+    im->scale = scale;
+    image_fill(L, im, idx, pal, n);
     return im;
 }
 
@@ -534,12 +553,13 @@ static int m_image_pixels(lua_State *L)
     if (images_used(s, o) + image_bytes(old->w, old->h, n) > LH_IMAGE_BYTES) {
         luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
     }
-    lh_image_t *im = image_new(L, 2, 3, old->w, old->h, n, old->scale);
-    if (!im) {
-        luaL_error(L, "ui.image: not enough memory");
+    if (n == old->n) {
+        image_fill(L, old, 2, 3, n);        // same size, same block: no second malloc
+    } else {
+        lh_image_t *im = image_new(L, 2, 3, old->w, old->h, n, old->scale);
+        lv_obj_set_user_data(o->obj, im);
+        free(old);
     }
-    lv_obj_set_user_data(o->obj, im);
-    free(old);
     lv_obj_invalidate(o->obj);
     return 0;
 }
@@ -769,9 +789,6 @@ static int l_image(lua_State *L)
         luaL_error(L, "ui.image: too many pixels on screen (%d KB per app)", LH_IMAGE_BYTES / 1024);
     }
     lh_image_t *im = image_new(L, 5, 6, w, h, n, scale);
-    if (!im) {
-        luaL_error(L, "ui.image: not enough memory");
-    }
     lv_obj_t *obj = base_obj(s->area, x, y, w * scale, h * scale);
     lv_obj_set_user_data(obj, im);
     lv_obj_add_event_cb(obj, image_draw, LV_EVENT_DRAW_MAIN, NULL);

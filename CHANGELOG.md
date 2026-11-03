@@ -13,6 +13,12 @@ site changes that came with them live in the parent repository.
   without smoothing: each run of same-coloured pixels is drawn as one filled block, so
   scaling costs no memory. Pixels (1 byte each) and palettes sit on the system heap, at
   most 16 KB per app, freed with the object.
+- **Bigger Lua images**: `ui.image` sides are no longer capped at 64; the scaled image
+  only has to fit the screen. The per-app budget is 64 KB, and in practice free memory
+  is the limit: an image malloc can't give is a Lua error that names the bytes needed and
+  the largest free block (apps can `pcall` it and fall back), never a crash. Each new
+  image logs its size, free heap and largest block. `img:pixels()` with the same palette
+  length reuses the image's block instead of briefly holding two.
 
 ## 0.5.5 (2026-11-02)
 

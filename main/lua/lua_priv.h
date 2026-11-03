@@ -29,8 +29,8 @@
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap
 #define LH_QR_TEXT_MAX      256         // bytes per code; more doesn't scan off this screen
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
-#define LH_IMAGE_SIDE       64          // ui.image: at most this many pixels wide and high (before scaling)
-#define LH_IMAGE_BYTES      (16 * 1024) // ui.image pixels (1 byte each) and palettes per app, on the system heap
+#define LH_IMAGE_SIDE       320         // ui.image: at most this many pixels wide and high (the scaled image must fit the screen too)
+#define LH_IMAGE_BYTES      (64 * 1024) // ui.image pixels (1 byte each) and palettes per app, on the system heap; malloc usually runs out first
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
 #define LH_TICK_MS          50          // on_tick period
